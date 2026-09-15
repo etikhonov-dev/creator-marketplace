@@ -23,6 +23,14 @@ be safe to run more than once** without double-awarding or exceeding a budget.
 | Postgres 16 | The hard requirement is a concurrency problem. `FOR UPDATE SKIP LOCKED`, advisory locks, partial indexes and real isolation are the tools that solve it; SQLite would define the problem away. |
 | Drizzle | Domain types derived from the schema, and locking SQL is first-class rather than an `$queryRaw` escape hatch (which is where Prisma would land for the one query that matters most). |
 
+**Node + pnpm, not Bun.** pnpm is a package manager; Bun is a runtime *and* a package
+manager, so these are not the same axis. Bun's wins are real — faster installs, no build
+step, built-in test runner — but two things decide it here. First, risk asymmetry: `pg`,
+Drizzle and Fastify all sit on `node:` API surface, and a Bun compatibility bug discovered
+at hour seven of a one-day box is unrecoverable time spent debugging a toolchain instead of
+an auction. Second, their production runs Node/TypeScript, and this exercise mirrors it.
+Bun's headline feature is available anyway: Node 23 strips TypeScript types natively.
+
 ### 2.2 Deliberately not built
 
 - **SSR / Next.js.** No public indexable pages, no SEO, every byte is per-creator and
@@ -39,6 +47,34 @@ be safe to run more than once** without double-awarding or exceeding a budget.
   therefore no CORS). Traefik would add a service and label-based config to learn.
 - **Auth, payments, third-party integrations.** Out of scope per the brief. A
   `X-Creator-Id` request-context plugin marks the seam where auth would attach.
+
+### 2.3 Why this is not three microservices
+
+Their production is "a fleet of independently deployable backend services on Kubernetes",
+and mirroring that here would be a mistake. Splitting campaigns and bids into separate
+services with separate databases converts the brief's hardest requirement — never exceed a
+budget — from one `BEGIN`/`COMMIT` into a distributed saga with compensating actions,
+idempotency keys and reconciliation. On a one-day box that ships something that does not
+work in order to demonstrate knowledge of a word.
+
+The brief already specifies a decomposition — frontend, application server, scheduled
+worker — and it is split along the axis that justifies splitting: request serving and
+background processing have different scaling profiles, failure modes and deploy cadences.
+
+The principle: **split where ownership, scaling profile, or consistency requirements
+genuinely diverge, not where the nouns are.** Splitting on nouns (a Campaign Service, a Bid
+Service) produces a distributed monolith — all the operational cost, none of the
+independence, because every request fans out across all of it.
+
+Where the real system would legitimately cut, and why:
+
+| Service | Why it is genuinely separate |
+|---|---|
+| **Ledger** | Different consistency and audit requirements, immutable append-only, likely in compliance scope. The clearest legitimate split in the system. |
+| **Stats ingestion** (scrapers) | Write-heavy, bursty, failure-tolerant. Scales on a completely different curve from request serving, and its output is eventually consistent by nature. |
+| **Marketplace / matching** | This slice. Transactional, read-heavy, needs strong consistency *within* a campaign. |
+| **Notifications / real-time** | Fan-out and connection-oriented; different runtime characteristics entirely. |
+| **Campaign management** (brand side) | Different bounded context, different users, different release cadence. Co-owns `campaigns`, which is why no creator-side concern is hung on that table. |
 
 ## 3. Architecture
 
@@ -95,6 +131,8 @@ CREATE TABLE creators (
     genre           genre        NOT NULL,
     follower_count  INT          NOT NULL CHECK (follower_count >= 0),
     engagement_rate NUMERIC(5,4) NOT NULL CHECK (engagement_rate BETWEEN 0 AND 1),
+    -- Stats are a projection of an external ingestion pipeline, not facts we own.
+    stats_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
@@ -117,6 +155,23 @@ CREATE TABLE campaigns (
 CREATE INDEX campaigns_open_by_deadline_idx
     ON campaigns (bidding_deadline) WHERE status = 'open';
 
+-- One row per pass of the closing worker. The durable join key between a decided bid
+-- and the run that decided it.
+CREATE TABLE closing_runs (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at         TIMESTAMPTZ NULL,
+    campaigns_closed    INT         NOT NULL DEFAULT 0,
+    bids_decided        INT         NOT NULL DEFAULT 0,
+    total_awarded_cents BIGINT      NOT NULL DEFAULT 0,
+    error               TEXT        NULL
+);
+
+-- finished_at IS NULL with an old started_at is a crashed worker. Partial index makes
+-- that a cheap query, so it can back a real alert.
+CREATE INDEX closing_runs_unfinished_idx
+    ON closing_runs (started_at) WHERE finished_at IS NULL;
+
 CREATE TABLE bids (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     campaign_id  UUID         NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
@@ -138,6 +193,7 @@ CREATE INDEX bids_by_creator_idx ON bids (creator_id, created_at DESC);
 
 CREATE TABLE campaign_closings (
     campaign_id         UUID PRIMARY KEY REFERENCES campaigns(id) ON DELETE RESTRICT,
+    run_id              UUID        NOT NULL REFERENCES closing_runs(id),
     closed_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     bid_count           INT         NOT NULL CHECK (bid_count >= 0),
     winning_bid_count   INT         NOT NULL CHECK (winning_bid_count >= 0),
@@ -152,6 +208,7 @@ CREATE TABLE bid_events (
     amount_cents BIGINT         NULL,
     fit_score    NUMERIC(5,2)   NULL,
     actor        TEXT           NOT NULL,   -- 'creator' | 'closer'
+    run_id       UUID           NULL REFERENCES closing_runs(id),  -- set on closer events
     metadata     JSONB          NOT NULL DEFAULT '{}',
     created_at   TIMESTAMPTZ    NOT NULL DEFAULT now()
 );
@@ -196,6 +253,19 @@ cannot be bypassed by a bug in application code.
 **`campaign_closings` is `ON DELETE RESTRICT` while `bids` is `CASCADE`.** Deliberate and
 opposite: a child row with no standalone meaning should vanish with its parent; an audit
 row must *block* deletion of the thing it audits.
+
+**`stats_updated_at` exists because this service does not own creator stats.**
+`follower_count` and `engagement_rate` are a stale projection of an external scraper
+pipeline. This is a second, independent reason the `fit_score` snapshot is right: the score
+was computed against third-party data as of a known time, from a system we do not control.
+The UI surfaces "stats updated Nh ago" so provenance is visible rather than implied.
+
+**`closing_runs` plus `run_id` columns exist for an on-call workflow, not for tidiness.**
+Log-only correlation answers "what happened during run R?". The question you actually get
+paged with is the inverse: *"@mia says she should have won campaign X — why didn't she?"*
+That requires going from a **row** to a **run**, so the join key has to be durable; logs
+are ephemeral and sampled. The path becomes: find her `lost` event → read its reason and
+`run_id` → pull every log line from that run → see the ranked list the closer evaluated.
 
 **`bid_events` uses `BIGSERIAL`** for monotonic ordering and append-only index inserts.
 `actor` records which *component* acted — with no auth we cannot record a person, but
@@ -542,8 +612,148 @@ demo run.
 | API (routes, services, repositories) | 1.5h |
 | Worker + integration tests | 1.5h |
 | Web app | 2.5h |
+| Observability (closing_runs, run_id, request IDs) + stats staleness | 1h |
 | Compose, CI, README | 1.5h |
 
 Cut in this order if time runs short: API route tests → `bid_events` UI surface →
 withdraw/reinstate → bid editing. The auction logic, its tests, and the README are not
 cuttable; they are what is being graded.
+
+## 14. Observability and correlation
+
+**API.** Fastify `genReqId` accepts an inbound `x-request-id` or generates one, echoes it
+on the response, and binds a child logger so every line in a request carries it.
+
+**Worker.** Each pass inserts a `closing_runs` row and binds `run_id` to its logger. Every
+campaign closed, bid decided and error in that pass is attributable to it. The run row is
+committed *before* the per-campaign transactions so they can reference it; a crash therefore
+leaves `finished_at IS NULL`, which is the signal, not a gap.
+
+**Durable correlation.** `run_id` is persisted on `campaign_closings` and on closer-written
+`bid_events` — see §4.1 for the workflow this serves.
+
+**Alerting.** The key SLI is not CPU or latency, it is **correctness lag**:
+
+```sql
+-- campaigns past their deadline that no run has closed
+SELECT count(*) FROM campaigns
+ WHERE status = 'open' AND bidding_deadline < now() - interval '5 minutes';
+
+-- runs that started and never finished
+SELECT count(*) FROM closing_runs
+ WHERE finished_at IS NULL AND started_at < now() - interval '5 minutes';
+```
+Both are cheap (each is backed by a partial index) and both are things a user would
+actually notice. Production would add OpenTelemetry with W3C `traceparent` so the browser
+request, the API span and the worker run share one trace.
+
+## 15. Scaling matching and selection
+
+Today matching is application-code scoring over ~10² campaigns. The evolution path, and
+the reason each step is triggered rather than pre-built:
+
+```
+now      per-campaign greedy in application code                        N ≈ 10²
+  ↓      matching becomes a set-based SQL query + partial index          N ≈ 10⁵
+  ↓      precomputed match table, incrementally refreshed by a job       decouples fan-out
+         (triggered when per-request scoring dominates p99)              from request latency
+  ↓      semantic features (brief text × content embeddings, audience
+         overlap, brand safety) → pgvector/HNSW for candidate generation,
+         the same explainable rule ranks the shortlist                   two-stage retrieval
+  ↓      MIP — only if the product moves to batched allocation rounds,
+         or creator capacity becomes a hard cross-campaign constraint
+```
+
+### 15.1 Vector search belongs in retrieval, not ranking
+
+ANN exists to make similarity search tractable in hundreds of dimensions. Today's features
+are genre (categorical, 8 values), follower count and engagement rate — three dimensions,
+two of them scalar ranges, for which a B-tree or GiST index is faster, exact and free.
+Using an approximate algorithm on a problem that has an exact index is a downgrade.
+
+There is also a formal mismatch: ANN returns top-K by *vector distance*, which equals our
+utility only if utility is a distance. Our utility has a price term (`fit / amount`), and
+price is not in the embedding — so ANN can prune by fit only and a full price pass over the
+survivors is still required. The pruning does not remove the work.
+
+Vector search becomes correct when match features go genuinely semantic, at which point the
+right shape is **ANN for recall, deterministic rule for ranking** — the standard two-stage
+retrieval-and-ranking architecture. Explainability is preserved exactly where creators see
+it.
+
+### 15.2 Why not a global MIP solver
+
+Granting the technical claim first: min-cost max-flow cannot express a per-campaign budget
+natively, because flow constraints are edge capacities while `Σ rate_k · x_k ≤ budget_c` is
+a knapsack constraint on a weighted sum. Discretising budget into flow units is a hack. For
+*global assignment* with heterogeneous rates and multiple objectives, MIP over MCMF is the
+right call. The objection is not the math — it is that MIP solves a different problem.
+
+1. **Different market design.** The brief specifies a bidding market: creators self-select
+   and name their own price — decentralised price discovery. A MIP over
+   `X[campaign, creator]` is centralised allocation. Note this also dissolves MIP's
+   strongest advantage: in a bidding market rates are not variable-and-unknown, each bid
+   *fixes* the price for that pair.
+2. **Independent deadlines make it ill-posed.** Campaign A closes at 10:00, B at 14:00. By
+   14:00 A's awards are committed contracts; re-optimising means revoking an award a
+   creator was already told they won. So a global MIP degenerates into a sequence of
+   per-campaign problems — unless the product becomes batched allocation rounds, which is a
+   different promise to creators.
+3. **Whose budget is being optimised?** `maximise total platform match quality` subject to
+   per-campaign budgets means brand X's money can be spent worse so brand Y's outcome
+   improves. Per-campaign optimisation has a property the global version structurally
+   cannot: every euro of a brand's budget is spent to maximise that brand's outcome.
+4. **Non-explainability across campaigns.** §6.2 rejected exact DP because an outcome
+   depends combinatorially on other bids within a campaign. Global MIP is worse: a creator
+   loses campaign 1 because the solver preferred to spend her capacity on campaign 2. There
+   is no threshold price and no advice you can give her.
+5. **Unbounded solve time.** MIP is NP-hard; a pathological instance blows past any
+   estimate. For a job on a deadline SLA you set a time limit and accept the incumbent —
+   i.e. back to an approximate answer, with less explainability than greedy and more
+   infrastructure. And with per-campaign budgets and no cross-campaign constraint the
+   problem *decomposes* per campaign, which is why a solver would be fast on it — and why
+   it was not needed.
+
+> Greedy versus MIP is not an optimisation question, it is a market-design question. An
+> auction is decentralised price discovery; MIP assignment is central planning. The choice
+> determines what can be explained to a creator, and whether one brand's budget can be
+> spent to improve another brand's outcome.
+
+## 16. Known limits and deliberate omissions
+
+**Bid spam / over-commitment.** Nothing stops a creator bidding on 100 campaigns a day.
+Not a scale problem — 100 rows is nothing — but an economic one: if she wins 40, delivery
+fails, which is worse for the marketplace than a missed match. Mitigations in increasing
+cost: a cap on concurrent active bids; a cap on concurrent *won* campaigns; reputation
+weighting, where completion rate becomes a fit component so carpet-bombing lowers future
+rank. That last is the real long-run answer.
+
+**The architectural cost of a win cap, which is why it is not built.** A cap on concurrent
+wins is a cross-campaign constraint, and it breaks the closing job's parallelism. Today each
+campaign closes in its own transaction holding only that campaign's lock —
+embarrassingly parallel, which is what makes `SKIP LOCKED` work. With a win cap, two closers
+working on *different* campaigns can each award the same creator and both commit: the
+invariant is violated with no lock contention, because they never touch the same row.
+Fixing it requires locking the creator rows too —
+`SELECT … FROM creators WHERE id = ANY($1) ORDER BY id FOR UPDATE` — and the `ORDER BY id`
+is load-bearing, since two closers acquiring overlapping creator locks in different orders
+deadlock. One product rule costs a second lock tier, a deadlock-avoidance discipline, and a
+job that no longer scales cleanly. This is the same coupling that makes a global solver
+(§15.2) attractive, approached from the other end.
+
+**Ledger seam.** Winning a bid commits money, so the per-campaign closing transaction is
+where a `bid_awarded` outbox row would be written. At that point the close is no longer
+atomic with its downstream effect, and the two campaign states of §4.1 become three
+(`open → closing → closed`) with an outbox drained by a separate consumer. Named precisely
+because the upgrade attaches to one identifiable transaction.
+
+**Platform integrations.** TikTok/Instagram ingestion is upstream (it produces the stats
+this service projects) and delivery verification is downstream of everything here. Neither
+changes a seam in this slice.
+
+**No web tests.** Deliberate: with one day, the marginal bug caught per minute is far
+higher in auction logic than in UI, and the UI is verified by walking the loop end to end.
+
+**Single Postgres, no read replicas, no caching.** Correct at this scale and the right
+default — adding a cache before there is a measured read problem introduces invalidation
+bugs in exchange for nothing.
