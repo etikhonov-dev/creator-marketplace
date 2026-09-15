@@ -179,8 +179,7 @@ export default defineWorkspace([
     // Needs a real Postgres. Serial: these tests contend on locks by design.
     test: {
       name: 'integration',
-      include: ['apps/**/*.integration.test.ts'],
-      fileParallelism: false,
+      include: ['apps/**/*.integration.test.ts', 'packages/**/*.integration.test.ts'],
       testTimeout: 30_000,
     },
   },
@@ -188,6 +187,8 @@ export default defineWorkspace([
 ```
 
 Separating the projects is deliberate: the unit suite must stay fast enough to run constantly, and the integration suite must run serially because its whole purpose is to contend on database locks.
+
+Serialisation is expressed as `--no-file-parallelism` on the root `test:integration` script, **not** as `fileParallelism: false` in the project config: Vitest honours that option only at the root of a workspace and silently ignores it inside a project. Setting it in the project looks correct, does nothing, and leaves the suite passing on test-ordering luck — confirmed by observing the schema file's PK-violation assertion turn into a foreign-key error once the worker file began truncating shared tables underneath it.
 
 - [ ] **Step 5: Create `.env.example`**
 
@@ -1523,7 +1524,7 @@ git commit -m "feat(domain): greedy value-density winner selection with a total 
 
 **Files:**
 - Create: `apps/worker/src/config.ts`, `apps/worker/src/logger.ts`, `apps/worker/src/close-auctions.ts`, `apps/worker/src/main.ts`
-- Test: `apps/worker/src/close-auctions.integration.test.ts`, `apps/worker/test/factories.ts`
+- Test: `apps/worker/src/close-auctions.integration.test.ts`, `apps/worker/src/test-support/factories.ts`
 - Modify: `apps/worker/package.json`
 
 **Interfaces:**
@@ -1536,7 +1537,7 @@ git commit -m "feat(domain): greedy value-density winner selection with a total 
 
 - [ ] **Step 1: Write the test factories**
 
-`apps/worker/test/factories.ts`:
+`apps/worker/src/test-support/factories.ts`:
 ```ts
 import { createDb, campaigns, creators, bids, type Database } from '@marketplace/db'
 import { randomUUID } from 'node:crypto'
@@ -1605,7 +1606,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { eq, sql } from 'drizzle-orm'
 import { bids, campaigns, campaignClosings, closingRuns, bidEvents } from '@marketplace/db'
 import { closeExpiredAuctions } from './close-auctions.js'
-import { connect, truncateAll, makeCreator, makeCampaign, makeBid } from '../test/factories.js'
+import { connect, truncateAll, makeCreator, makeCampaign, makeBid } from './test-support/factories.js'
 
 let ctx: ReturnType<typeof connect>
 
@@ -1943,7 +1944,11 @@ type OneResult = { bidsDecided: number; awardedCents: number }
  */
 async function closeOneCampaign(
   db: Database,
-  { runId, now, log }: { runId: string; now?: Date; log: Logger },
+  // `now: Date | undefined`, not `now?: Date`. Under exactOptionalPropertyTypes
+  // those differ: the public CloseOptions may omit the key, but this internal
+  // call always passes it, possibly holding undefined. Saying so is the honest
+  // signature rather than widening the caller.
+  { runId, now, log }: { runId: string; now: Date | undefined; log: Logger },
 ): Promise<OneResult | null> {
   return db.transaction(async (tx) => {
     const cutoff = now ?? new Date()
@@ -2100,7 +2105,7 @@ Add to `apps/worker/package.json`:
 - [ ] **Step 7: Run the integration suite**
 
 Run: `pnpm test:integration -- close-auctions`
-Expected: all 11 PASS.
+Expected: all 10 PASS.
 
 Debugging notes if they don't:
 - *`is idempotent` fails with a duplicate-key error rather than a clean no-op* → the `status = 'open'` predicate is missing from the claim query, so L2 isn't guarding and you're relying on L4 to catch it. L4 is a backstop, not the mechanism.

@@ -7,7 +7,7 @@
   "scripts": {
     "typecheck": "tsc -b",
     "test": "vitest run --project unit",
-    "test:integration": "vitest run --project integration",
+    "test:integration": "vitest run --project integration --no-file-parallelism",
     "db:generate": "pnpm --filter @marketplace/db generate",
     "db:migrate": "pnpm --filter @marketplace/db migrate",
     "db:seed": "pnpm --filter @marketplace/db seed",
