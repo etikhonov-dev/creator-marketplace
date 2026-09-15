@@ -228,12 +228,27 @@ unrelated→ 0.2
 ### 5.3 Fit score — weighted sum of saturating components
 
 ```
-genreFit      = adjacency(creator.genre, campaign.target_genre)      weight 0.50
-engagementFit = min(1, engagement / 0.08)                            weight 0.30
-audienceFit   = min(1, log10(followers / max(min_followers,1)) / 1)  weight 0.20
+genreFit      = adjacency(creator.genre, campaign.target_genre)   weight 0.50
+engagementFit = min(1, engagement / ENGAGEMENT_CEILING)           weight 0.30
+audienceFit   = min(1, log10(followers / reference) / log10(10))  weight 0.20
+
+  where reference = min_followers > 0 ? min_followers : AUDIENCE_BASELINE
+        ENGAGEMENT_CEILING = 0.08
+        AUDIENCE_BASELINE  = 10_000
 
 fit = 100 * Σ (component × weight)
 ```
+
+`log10(10)` is 1, so the denominator is there for readability: it names the saturation
+point (10× the reference) instead of hiding it in a magic constant.
+
+**The zero-minimum case.** Roughly half of a realistic campaign set sets no follower
+minimum, and `min_followers = 0` would make `reference` zero — division by zero, and
+conceptually every creator would score a perfect 1.0, so the component would stop
+discriminating on exactly the campaigns where it matters most. A campaign with no stated
+minimum still prefers a larger audience to a tiny one. So an unstated minimum falls back to
+`AUDIENCE_BASELINE` (10k), meaning 100k followers saturates. This is a judgement call and
+the constant is exported and tested, not buried.
 
 **Weights.** Genre relevance is what the brand is actually buying, so it dominates.
 Engagement predicts campaign performance better than raw reach. Follower count is the most
@@ -402,18 +417,32 @@ worker --loop   polls every CLOSE_INTERVAL_MS (15s in compose) → the demo
 
 ```
 GET   /api/health
-GET   /api/creators                      creator picker
-GET   /api/creators/:id/campaigns        { matched: [...ranked], ineligible: [...+reasons] }
-GET   /api/creators/:id/bids             my bids + campaign summary + outcome reason
-POST  /api/campaigns/:id/bids            { amountCents, pitch }  (upsert: also reinstates)
-PATCH /api/bids/:id                      { amountCents, pitch }  re-snapshots fit_score
+GET   /api/creators                   creator picker — the only identity-free route
+GET   /api/campaigns                  { matched: [...ranked], ineligible: [...+reasons] }
+GET   /api/bids                       my bids + campaign summary + outcome reason
+POST  /api/campaigns/:id/bids         { amountCents, pitch }  (upsert: also reinstates)
+PATCH /api/bids/:id                   { amountCents, pitch }  re-snapshots fit_score
 POST  /api/bids/:id/withdraw
-POST  /api/dev/campaigns/:id/expire      gated by ENABLE_DEV_TOOLS; sets deadline = now()
+POST  /api/dev/campaigns/:id/expire   gated by ENABLE_DEV_TOOLS; sets deadline = now()
 ```
 
-A `X-Creator-Id` request-context plugin populates `req.creator` and ownership checks use
-it. With no auth this is not security — it marks the seam where auth attaches, and keeps
-mutations from being creator-agnostic in a way that would be wrong to later retrofit.
+`ENABLE_DEV_TOOLS` defaults to **false**, and `docker-compose.yml` sets it to `true`
+explicitly. So the reviewer gets the demo control without any config, while the default for
+any other deployment is off — the safe direction for a flag to fail. The route mutates a
+deadline only; it has no access to winner selection.
+
+**Identity comes from exactly one place: the `X-Creator-Id` header.** A Fastify
+request-context plugin resolves it to `req.creator` (404 if unknown), and every route
+except `GET /api/creators` requires it. So `/api/campaigns` means "campaigns matched for
+me" and `/api/bids` means "my bids" — no `:creatorId` path parameter anywhere.
+
+The first draft of this used `/api/creators/:id/campaigns` for reads and the header for
+writes. That is two sources of truth for "who am I", and the bug it invites is obvious in
+hindsight: a request whose path says one creator and whose header says another. With one
+source, that request is unrepresentable.
+
+With no auth this is not security. It marks the seam where auth attaches — swap the plugin
+for one that reads a verified JWT and no route changes.
 
 Errors are `{ error: { code, message, details? } }` with codes the UI maps to copy:
 `CAMPAIGN_NOT_BIDDABLE`, `CREATOR_INELIGIBLE`, `BID_EXCEEDS_BUDGET`, `BID_NOT_FOUND`,
@@ -491,6 +520,18 @@ Designed so the app is interesting the moment it opens:
   - the rest days out
 - Enough pre-existing bids on the closed campaigns that the budget actually binds and the
   greedy rule visibly rejects someone.
+
+**The seed does not hand-write closed state.** It inserts campaigns with past deadlines
+plus `pending` bids, then invokes the real closing routine once. Two benefits: the seeded
+`won`/`lost`/`campaign_closings`/`bid_events` rows are by construction exactly what the
+production code path produces — there is no second, fictional implementation of closing
+that could drift from the real one — and seeding doubles as a smoke test of the closer on
+every fresh boot.
+
+**The seed is idempotent.** Fixed UUIDs for creators and campaigns plus
+`ON CONFLICT DO NOTHING`, so `docker compose up` a second time does not duplicate data or
+re-close settled auctions. A `--reset` flag truncates first, for when you want a clean
+demo run.
 
 ## 13. Time budget (~10h) and cut order
 
