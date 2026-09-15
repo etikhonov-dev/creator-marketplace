@@ -1024,6 +1024,17 @@ describe('scoreFit', () => {
     expect(at100x).toBeCloseTo(at500x, 2)
   })
 
+  // Without this the engagement component has no discriminating test at all:
+  // every other engagement assertion is a saturation or a bounds check, which a
+  // function returning a constant would satisfy.
+  it('rewards higher engagement below the ceiling', () => {
+    const low  = scoreFit(creator({ engagementRate: 0.02 }), campaign()).total
+    const mid  = scoreFit(creator({ engagementRate: 0.05 }), campaign()).total
+    const high = scoreFit(creator({ engagementRate: ENGAGEMENT_CEILING }), campaign()).total
+    expect(mid).toBeGreaterThan(low)
+    expect(high).toBeGreaterThan(mid)
+  })
+
   it('saturates engagement fit at the ceiling', () => {
     const atCeiling = scoreFit(creator({ engagementRate: ENGAGEMENT_CEILING }), campaign()).total
     const wayAbove  = scoreFit(creator({ engagementRate: 0.5 }), campaign()).total
@@ -1058,7 +1069,9 @@ describe('scoreFit', () => {
 - [ ] **Step 3: Run it and confirm the `scoreFit` tests fail**
 
 Run: `pnpm test -- matching`
-Expected: the four `checkEligibility` tests PASS; every `scoreFit` test FAILS with `scoreFit is not a function`.
+Expected: the four `checkEligibility` tests PASS; five `scoreFit` tests FAIL — `returns 100 for a perfect creator`, `returns one component per weighted dimension`, `ranks exact genre above adjacent`, `rewards higher engagement below the ceiling`, and `falls back to the baseline audience`.
+
+Note that the other `scoreFit` tests pass against the stub, because a function returning a constant `0` trivially satisfies a bounds check, a saturation check, and a purity check. Those tests are regression guards, not specifications — the five above are what actually pin the behaviour.
 
 - [ ] **Step 4: 🧑 YOUR TURN — implement `scoreFit`**
 
@@ -1129,7 +1142,7 @@ picked and why, and I'll fold the reasoning into the README.
 - [ ] **Step 5: Run the tests**
 
 Run: `pnpm test -- matching`
-Expected: all PASS (15 tests). If `has a total that equals the weighted sum` fails, the rounding is inconsistent between `total` and the components — round only at the end.
+Expected: all PASS (16 tests). If `has a total that equals the weighted sum` fails, the rounding is inconsistent between `total` and the components — round only at the end.
 
 - [ ] **Step 6: Export and commit**
 
