@@ -289,17 +289,29 @@ Exact 0/1 knapsack by dynamic programming is entirely tractable here — budgets
 cents with a few dozen bids. I chose not to use it, and the reason is market
 design rather than performance.
 
-Under exact DP a creator's outcome depends **combinatorially on every other bid**.
-There is no threshold price: lowering your ask by €1 can flip you out of the
-winning set because it changes which *other* subset fits. You cannot give a
-creator any advice, because no monotone relationship exists between their own
-actions and their outcome, and outcomes reshuffle non-locally when an unrelated
-bid changes.
+An exact solver answers exactly one question: *which subset of bids maximises
+total fit within budget?* That is a binary in-or-out verdict on a set. It
+produces **no ranking**, so there is nothing to show a creator, and the only
+honest explanation for a loss is "you were not in the optimal subset" — true,
+and useless.
 
-Greedy density gives every creator a rule they can act on: **raise your fit or
-lower your price and your rank improves — always.** For a two-sided marketplace
-that participants have to trust and learn, a slightly worse allocation with a
-legible rule beats an optimal allocation that behaves like a lottery.
+Greedy value-density produces a **total order** instead. Every creator has a
+position, computed from two numbers they control, and every loss has a reason
+that names what actually happened: below the quality bar, outranked on value, or
+budget remaining but not enough to cover the ask. Those three reasons are a
+product feature, and they exist *only* because the rule is a ranking.
+
+Being precise about what greedy does **not** buy, since the obvious argument for
+it is wrong: exact DP is in fact monotone in a creator's own price. Lowering your
+ask can never move you from winning to losing — any winning set containing you
+still fits once it costs less, and sets without you are unchanged. What exact DP
+cannot give you is a **threshold price or a rank**: whether you win depends on
+the whole combination of everyone else's bids, so there is no number you can be
+told in advance, no position you can be shown, and an unrelated bid changing can
+flip your outcome.
+
+For a two-sided marketplace that participants have to learn and trust, a slightly
+worse allocation they can reason about beats an optimal one they cannot.
 
 Worth knowing: **fractional knapsack is solved *optimally* by exactly this greedy
 algorithm.** The 0/1 constraint — bids are all-or-nothing — is the only reason it

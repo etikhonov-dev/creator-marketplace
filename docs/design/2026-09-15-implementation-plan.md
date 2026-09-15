@@ -1457,10 +1457,10 @@ Append to `packages/domain/src/winners.ts`:
  * Chooses which bids win a campaign, subject to its budget.
  *
  * This is 0/1 knapsack. We deliberately do NOT solve it optimally — see spec
- * §6.2. Exact DP makes a creator's outcome depend combinatorially on every
- * other bid, so there is no threshold price and no advice you can give them.
- * Greedy value-density gives each creator a rule they can act on: improve your
- * fit or lower your price and your rank improves.
+ * §6.2. An exact solver returns a winning *subset*: no ranking, so nothing to
+ * show a creator, and no loss reason beyond "you were not in the optimal set".
+ * Greedy value-density returns a total order instead, which is what makes a
+ * position and a per-bid loss reason expressible at all.
  *
  * Invariants this must uphold (all covered by tests):
  *   - sum of winning amounts <= budgetCents, always
