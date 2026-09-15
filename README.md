@@ -212,6 +212,20 @@ discriminating *precisely* on the campaigns where nothing else constrains who ca
 bid. The baseline keeps it meaningful. (Found during spec self-review, not by a
 user.)
 
+**Three curve decisions, all pulling the same way** — the component's job is to
+differentiate *among* eligible creators, not to re-reward the gate:
+
+- **Meeting the follower minimum exactly scores 0 on audience, not a floor.** The
+  hard gate already established "enough reach"; passing a requirement is not an
+  achievement. A floor would compress the range this component exists to spread out.
+- **Log-scaled, not linear.** 2× the minimum scores 0.30 where a linear ramp gives
+  0.11. If saturating means extra reach stops adding value, the curve should pay
+  out early and flatten rather than track scale — linear contradicts the premise
+  it is supposed to implement.
+- **Zero engagement scores zero**, forfeiting all 30 points. A creator with 2M
+  followers and dead comments *should* rank below a smaller creator with a live
+  audience, because engagement is what predicts whether the campaign performs.
+
 **Adjacency is stored as unordered pairs** and the lookup set is derived from them,
 so symmetry holds by construction rather than by vigilance — there is exactly one
 place each relationship is written down, and a test asserts symmetry across all
@@ -302,6 +316,28 @@ that is both very cheap and *just* over the quality bar, against a bid that fill
 the budget exactly. `packages/domain/src/winners.test.ts` asserts this, so the
 caveat is verified rather than claimed — and if someone later swaps in a better
 algorithm, that test tells them the trade-off changed.
+
+### A worked example, from the seeded data
+
+The L'Oréal auction — budget **€12,000**, four bids — shows the rule doing
+something a simple "highest score wins" ranking would not:
+
+| creator | fit | ask | value density | outcome |
+|---|---|---|---|---|
+| `@mia.beats` | 51.57 | €2,600 | **1.98e-4** | **won** (1st) |
+| `@glowbyjo` | 77.88 | €5,500 | 1.42e-4 | **won** (2nd) |
+| `@liftwithlena` | 47.41 | €3,800 | 1.25e-4 | **won** (3rd) |
+| `@sofi.styles` | 48.23 | €4,000 | 1.21e-4 | lost — `did_not_fit_remaining_budget` |
+
+Note the first pick: `@mia.beats` at fit **51.57** is awarded *ahead of*
+`@glowbyjo` at fit **77.88**, because she is less than half the price. That is
+value density, not score, doing the work — and it is why the quality bar exists
+to stop the same logic running away with genuinely bad fits.
+
+Total awarded **€11,900 of €12,000**. `@sofi.styles` lost with €100 remaining and
+a €4,000 ask, which is exactly the `did_not_fit_remaining_budget` case — and why
+that reason is distinct from `outranked`: there *was* budget left, and a lower ask
+would have fitted.
 
 ### The total order, and why it is an idempotency requirement
 
@@ -429,6 +465,14 @@ manual `kubectl create job --from=cronjob`.
 | `ignores withdrawn bids` | withdrawn stays withdrawn, `decided_at` stays null |
 | `refuses to close a campaign while any pending bid is left undecided` | L6 rolls back, campaign stays open |
 | `is deterministic under any input ordering` (unit) | the comparator is a total order |
+
+Verified on a clean `git clone` with `docker compose up --build`, walking this
+file's demo literally: bootstrap exits 0, the API reports healthy, the ranked feed
+and eligibility reasons render as described above, a bid placed through the API
+settles to **won** ~11s after the demo control moves the deadline, and running the
+closer twice more inside the container reports `campaignsClosed: 0` both times.
+Final sweep: **3** closings over **3** distinct campaigns, **0** stranded bids,
+**0** budget overruns, **0** unfinished runs, **0** failed runs.
 
 Separately verified by hand: **three** concurrent workers against one campaign
 with 12 bids produced `campaignsClosed: [1, 0, 0]`, exactly one closing row,
