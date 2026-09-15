@@ -548,8 +548,10 @@ describe('money', () => {
     expect(toCents(0.1)).toBe(10)
   })
 
-  // The reason this module exists: 0.1 + 0.2 !== 0.3 in IEEE 754, and a
-  // naive euros*100 produces 1004.9999999999999 for 10.05.
+  // The reason this module exists: 0.1 + 0.2 !== 0.3 in IEEE 754, and a naive
+  // euros * 100 lands on the wrong side of a cent boundary — 1.005 * 100 is
+  // 100.49999999999999, so rounding the product rounds a number that is
+  // already wrong.
   it('rounds float artefacts instead of truncating them', () => {
     expect(toCents(10.05)).toBe(1005)
     expect(toCents(1.005)).toBe(101) // half-up at the cent boundary
@@ -561,10 +563,18 @@ describe('money', () => {
     expect(() => toCents(-1)).toThrow()
   })
 
+  // A cent count above 2^53 stops being an exact integer in JS, so it must be
+  // refused at the boundary rather than silently losing precision later.
+  it('rejects amounts whose cent value would exceed exact integer range', () => {
+    expect(() => toCents(Number.MAX_SAFE_INTEGER)).toThrow()
+  })
+
   it('formats cents as EUR without reintroducing floats in the output', () => {
-    expect(formatEur(1234)).toBe('€12.34')
-    expect(formatEur(100_000)).toBe('€1,000.00')
-    expect(formatEur(0)).toBe('€0.00')
+    // Fed through toCents rather than raw literals: Cents is branded, so a
+    // bare number does not typecheck here — which is the point of the brand.
+    expect(formatEur(toCents(12.34))).toBe('€12.34')
+    expect(formatEur(toCents(1000))).toBe('€1,000.00')
+    expect(formatEur(toCents(0))).toBe('€0.00')
   })
 
   it('round-trips', () => {
@@ -601,13 +611,27 @@ declare const centsBrand: unique symbol
  */
 export type Cents = number & { readonly [centsBrand]: true }
 
+/**
+ * Above this, the cent count exceeds 2^53 - 1 and stops being an exact integer
+ * in JS. The column is BIGINT, so the database could hold more than the
+ * application can represent; the boundary refuses the gap instead of hiding it.
+ *
+ * It also keeps `euros` below 1e21, the point at which JS switches to
+ * exponential notation in string conversion — which the scaling below relies on.
+ */
+const MAX_EUROS = Number.MAX_SAFE_INTEGER / 100
+
 export function toCents(euros: number): Cents {
   if (!Number.isFinite(euros)) throw new Error(`not a finite amount: ${euros}`)
   if (euros < 0) throw new Error(`amount must not be negative: ${euros}`)
-  // Math.round, not Math.trunc: euros * 100 is subject to binary representation
-  // error (10.05 * 100 === 1004.9999999999999), and truncating would silently
-  // lose a cent. EPSILON nudge keeps exact .5 cases rounding half-up.
-  return Math.round(euros * 100 + Number.EPSILON) as Cents
+  if (euros > MAX_EUROS) throw new Error(`amount exceeds exact integer range: ${euros}`)
+
+  // Scale by shifting the decimal exponent in the *string*, before the double
+  // is constructed — not by multiplying. Multiplying introduces its own error:
+  // 1.005 * 100 is 100.49999999999999, so Math.round of the product yields 100
+  // and quietly loses a cent. Number('1.005e2') is exactly 100.5, which rounds
+  // half-up to 101 as a reader of this function would expect.
+  return Math.round(Number(`${euros}e2`)) as Cents
 }
 
 export const centsToEuros = (c: Cents): number => c / 100
@@ -637,7 +661,7 @@ export function parseEuroInput(input: string): Cents | null {
 - [ ] **Step 4: Run and confirm pass**
 
 Run: `pnpm test -- money`
-Expected: PASS (6 tests)
+Expected: PASS (7 tests)
 
 - [ ] **Step 5: Write the failing genre test**
 
