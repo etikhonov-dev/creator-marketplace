@@ -1,0 +1,39 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: marketplace
+          POSTGRES_PASSWORD: marketplace
+          POSTGRES_DB: marketplace_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 2s
+          --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgres://marketplace:marketplace@localhost:5432/marketplace_test
+      DATABASE_URL_TEST: postgres://marketplace:marketplace@localhost:5432/marketplace_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm --filter @marketplace/web exec tsc --noEmit
+      - run: pnpm test                      # pure domain + API middleware
+      - run: pnpm db:migrate
+      # The reason CI exists in this project: it runs the closer twice against a
+      # real Postgres and asserts no double-awards and no budget overrun. The
+      # brief's hardest requirement is proved on every push rather than claimed
+      # in the README.
+      - run: pnpm test:integration
+      # Proves the artifact a reviewer actually runs still builds.
+      - run: docker compose build

@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: marketplace
+      POSTGRES_PASSWORD: marketplace
+      POSTGRES_DB: marketplace
+    ports: ['5432:5432']
+    volumes: ['pgdata:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U marketplace -d marketplace']
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # Migrate, seed, then settle already-expired seed campaigns via the real
+  # closer. Runs to completion and exits; api and worker wait for it.
+  # This is the same ordering a pre-deploy Job gives you in Kubernetes, and
+  # the reason migrations are NOT run on API boot: N replicas booting would
+  # race on the migration lock.
+  bootstrap:
+    build: { context: ., dockerfile: apps/worker/Dockerfile }
+    command: sh -c "pnpm db:migrate && pnpm db:seed && pnpm --filter @marketplace/worker start:once"
+    environment:
+      DATABASE_URL: postgres://marketplace:marketplace@postgres:5432/marketplace
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    environment:
+      DATABASE_URL: postgres://marketplace:marketplace@postgres:5432/marketplace
+      PORT: 3000
+      # Explicitly on, only here. The default is false everywhere else.
+      ENABLE_DEV_TOOLS: 'true'
+    depends_on:
+      bootstrap: { condition: service_completed_successfully }
+    # The API takes a few seconds to boot. Without this, `web` starts as soon as
+    # the api *container* starts and a reviewer's first page load can 502 while
+    # tsx is still warming up. `node -e` rather than curl/wget: node is the one
+    # binary this image is guaranteed to have.
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  worker:
+    build: { context: ., dockerfile: apps/worker/Dockerfile }
+    command: pnpm --filter @marketplace/worker start:loop
+    environment:
+      DATABASE_URL: postgres://marketplace:marketplace@postgres:5432/marketplace
+      CLOSE_INTERVAL_MS: 15000
+    depends_on:
+      bootstrap: { condition: service_completed_successfully }
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args: { VITE_ENABLE_DEV_TOOLS: 'true' }
+    # The only published application port. nginx proxies /api to the api
+    # service internally, so the browser sees one origin and the codebase
+    # contains no CORS configuration at all.
+    ports: ['8080:80']
+    depends_on:
+      api: { condition: service_healthy }
+
+volumes:
+  pgdata:

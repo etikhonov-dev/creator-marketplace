@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+**/dist
+**/.tsbuildinfo
+.git
+.github
+.env
+.env.*
+!.env.example
+docs
+ASSIGNMENT.md
+*.log
+.DS_Store

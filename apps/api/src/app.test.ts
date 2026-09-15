@@ -83,6 +83,23 @@ describe('app middleware', () => {
     await app.close()
   })
 
+  // Found in compose: a malformed body was being logged as 'unhandled error'
+  // and answered with a 500, even though Fastify's own FST_ERR_CTP_INVALID_JSON_BODY
+  // already carries statusCode 400.
+  it('answers a malformed JSON body with 400, not 500', async () => {
+    const app = buildApp({ db: stubDb, config: config({ ENABLE_DEV_TOOLS: true }) })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/dev/campaigns/00000000-0000-4000-8000-000000000000/expire',
+      headers: { 'content-type': 'application/json' },
+      payload: '{not json',
+    })
+    expect(res.statusCode).toBe(400)
+    expect(res.json().error.code).toBe('VALIDATION_FAILED')
+    expect(res.json().error.details.fastifyCode).toBe('FST_ERR_CTP_INVALID_JSON_BODY')
+    await app.close()
+  })
+
   it('registers the dev route only when explicitly enabled', async () => {
     const app = buildApp({ db: stubDb, config: config({ ENABLE_DEV_TOOLS: true }) })
     await app.ready()

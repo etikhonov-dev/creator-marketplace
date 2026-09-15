@@ -2521,6 +2521,22 @@ export default fp(async (app) => {
       })
     }
 
+    // Fastify's own client errors — malformed JSON, unsupported media type,
+    // payload too large — already carry the right 4xx and a stable FST_ERR_*
+    // code. Falling through to the 500 below would blame the server for a
+    // client mistake, log it at error level, and page someone for a bad curl.
+    if (typeof error.statusCode === 'number' && error.statusCode >= 400 && error.statusCode < 500) {
+      request.log.warn({ fastifyCode: error.code, statusCode: error.statusCode }, error.message)
+      return reply.status(error.statusCode).send({
+        error: {
+          code: 'VALIDATION_FAILED',
+          // Safe to echo: these messages describe the request, not internals.
+          message: error.message,
+          details: { fastifyCode: error.code },
+        },
+      })
+    }
+
     // Anything else is a bug. Log it fully, tell the client nothing.
     request.log.error({ err: error }, 'unhandled error')
     return reply.status(500).send({
@@ -3567,7 +3583,13 @@ git commit -m "feat(web): grouped bid list with explained losses and a dev-gated
 
 - [ ] **Step 1: Write the Dockerfiles**
 
-All three are multi-stage, pruning the workspace with `pnpm deploy --filter` so each image carries only its own dependency closure. `apps/web/Dockerfile` builds with Node then copies `dist/` into `nginx:alpine` alongside `nginx.conf` — the final web image contains no Node runtime at all, which is the deployment story from spec §2.2 made literal.
+All three are multi-stage with a `deps` stage that copies only the lockfile and the package manifests, so editing a source file does not invalidate the install layer. The runtime stage then copies the install tree wholesale (`COPY --from=deps /repo ./`) and overlays source on top.
+
+Copying the install tree wholesale rather than enumerating `packages/*/node_modules` is not a style choice: `packages/domain` has no dependencies, so pnpm creates no `node_modules` directory for it and a per-package `COPY` fails with *"/repo/packages/domain/node_modules": not found*. `.dockerignore` excludes `node_modules` from the build context, so the source overlay cannot clobber the installed tree.
+
+`apps/api` and `apps/worker` run TypeScript directly through `tsx` rather than compiling. The trade is explicit: slightly slower boot and a dev dependency in the image, in exchange for one fewer build stage that could diverge from what the tests ran against. The worker image is also the bootstrap image — compose overrides its `CMD` — so the migration path and the runtime path cannot drift apart.
+
+`apps/web/Dockerfile` builds with Node then copies `dist/` into `nginx:alpine` alongside `nginx.conf` — the final web image contains no Node runtime at all, which is the deployment story from spec §2.2 made literal. It also copies `apps/api`, because the web app imports the route types type-only: a response-shape change is a frontend compile error rather than a runtime surprise.
 
 - [ ] **Step 2: Write `docker-compose.yml`**
 
@@ -3609,6 +3631,16 @@ services:
       ENABLE_DEV_TOOLS: 'true'
     depends_on:
       bootstrap: { condition: service_completed_successfully }
+    # The API takes a few seconds to boot. Without this, `web` starts as soon as
+    # the api *container* starts and a reviewer's first page load can 502 while
+    # tsx is still warming up. `node -e` rather than curl/wget: node is the one
+    # binary this image is guaranteed to have.
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
 
   worker:
     build: { context: ., dockerfile: apps/worker/Dockerfile }
@@ -3625,7 +3657,8 @@ services:
       dockerfile: apps/web/Dockerfile
       args: { VITE_ENABLE_DEV_TOOLS: 'true' }
     ports: ['8080:80']
-    depends_on: [api]
+    depends_on:
+      api: { condition: service_healthy }
 
 volumes:
   pgdata:
@@ -3683,6 +3716,16 @@ docker compose down -v && docker compose up --build
 Expected: postgres becomes healthy, `bootstrap` exits 0 having migrated/seeded/settled, api and worker start, `http://localhost:8080` serves the picker, and `curl -s localhost:8080/api/health` returns `{"status":"ok","database":"ok"}`.
 
 Then verify a re-run is clean: `docker compose up` again and confirm `bootstrap` exits 0 with no duplicate-key errors.
+
+*Verified.* Cold start from `docker compose down -v`: postgres healthy → bootstrap migrated, seeded and closed 2 campaigns (`bid_count 4, winners 3, awarded 1190000, budget 1200000` and `bid_count 2, winners 1, awarded 420000, budget 800000`) then exited 0 → api healthy → worker looping → `curl localhost:8080/api/health` returns `{"status":"ok","database":"ok"}` and the SPA fallback serves `/bids` as 200. Only ports 8080 (web) and 5432 (postgres, for inspection) are published; the API is reachable only through nginx, so the codebase contains no CORS configuration.
+
+Full loop through nginx with no manual database access: place a bid (`pending`, fit snapshot 75.37) → `POST /api/dev/campaigns/:id/expire` → phase becomes `awaiting_results` with the campaign still `open` → the looping worker settles it ~15s later and the bid reads `won`. Running the closer twice more inside the container reported `campaignsClosed: 0` both times.
+
+Invariant sweep after all of it: 5 closings over 5 distinct campaigns, **0** campaigns closed with a pending bid, **0** budget overruns, **0** unfinished runs, **0** failed runs.
+
+Two defects this step found:
+- `web` declared `depends_on: [api]`, which is start-order only. The API needs a few seconds to boot under `tsx`, so a reviewer's first page load could 502. The api service now has a `/api/health` healthcheck and `web` waits for `condition: service_healthy`.
+- A malformed JSON body was answered with **500** and logged as `unhandled error`, even though Fastify's own `FST_ERR_CTP_INVALID_JSON_BODY` already carries `statusCode: 400`. The error handler now passes through any 4xx a Fastify error already carries, logged at `warn` — a bad request should not page anyone.
 
 - [ ] **Step 5: Commit**
 

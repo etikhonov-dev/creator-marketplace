@@ -32,6 +32,22 @@ export default fp(async (app) => {
       })
     }
 
+    // Fastify's own client errors — malformed JSON, unsupported media type,
+    // payload too large — already carry the right 4xx and a stable FST_ERR_*
+    // code. Falling through to the 500 below would blame the server for a
+    // client mistake, log it at error level, and page someone for a bad curl.
+    if (typeof error.statusCode === 'number' && error.statusCode >= 400 && error.statusCode < 500) {
+      request.log.warn({ fastifyCode: error.code, statusCode: error.statusCode }, error.message)
+      return reply.status(error.statusCode).send({
+        error: {
+          code: 'VALIDATION_FAILED',
+          // Safe to echo: these messages describe the request, not internals.
+          message: error.message,
+          details: { fastifyCode: error.code },
+        },
+      })
+    }
+
     // Anything else is a bug. Log it fully, tell the client nothing.
     request.log.error({ err: error }, 'unhandled error')
     return reply.status(500).send({
