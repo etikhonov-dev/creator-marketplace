@@ -23,13 +23,6 @@ be safe to run more than once** without double-awarding or exceeding a budget.
 | Postgres 16 | The hard requirement is a concurrency problem. `FOR UPDATE SKIP LOCKED`, advisory locks, partial indexes and real isolation are the tools that solve it; SQLite would define the problem away. |
 | Drizzle | Domain types derived from the schema, and locking SQL is first-class rather than an `$queryRaw` escape hatch (which is where Prisma would land for the one query that matters most). |
 
-**Node + pnpm, not Bun.** pnpm is a package manager; Bun is a runtime *and* a package
-manager, so these are not the same axis. Bun's wins are real — faster installs, no build
-step, built-in test runner — but two things decide it here. First, risk asymmetry: `pg`,
-Drizzle and Fastify all sit on `node:` API surface, and a Bun compatibility bug discovered
-at hour seven of a one-day box is unrecoverable time spent debugging a toolchain instead of
-an auction. Second, their production runs Node/TypeScript, and this exercise mirrors it.
-Bun's headline feature is available anyway: Node 23 strips TypeScript types natively.
 
 ### 2.2 Deliberately not built
 
@@ -88,7 +81,7 @@ Where the real system would legitimately cut, and why:
                     ┌──────────────────────────────────────┐
                     │ api (Fastify)                        │
                     │  routes → services → repositories    │
-                    │  owns: matching display, bid writes   │
+                    │  owns: matching display, bid writes  │
                     └───────────────┬──────────────────────┘
                                     │
    ┌────────────────────────────┐   ▼                ┌────────────────────┐
