@@ -425,15 +425,25 @@ Overlapping cron schedules; a pod restarting after partial work; a manual re-run
 **L1 — claim work with a row lock**
 
 ```sql
+-- Inside the same transaction that will close this campaign.
 SELECT * FROM campaigns
  WHERE status = 'open' AND bidding_deadline <= now()
  ORDER BY bidding_deadline, id
  FOR UPDATE SKIP LOCKED
- LIMIT 20;
+ LIMIT 1;
 ```
-`FOR UPDATE` locks the rows for the transaction; `SKIP LOCKED` means a second worker does
-not block — it skips them and claims different campaigns, so N workers process disjoint
-sets in parallel. This is how you build a work queue in Postgres without Redis or SQS.
+`FOR UPDATE` locks the row for the transaction; `SKIP LOCKED` means a second worker does
+not block — it skips the locked row and claims a different campaign, so N workers process
+disjoint campaigns in parallel. This is how you build a work queue in Postgres without
+Redis or SQS.
+
+**`LIMIT 1`, not a batch, and this is load-bearing.** A row lock lives exactly as long as
+the transaction that took it. Claiming twenty campaigns in one transaction and then closing
+each in its own transaction (L3) would release every lock before any work happened — a
+concurrent worker could then claim campaigns this one believes it owns. So the claim and
+the close must share a transaction: claim one, close it, commit, repeat until
+`MAX_CAMPAIGNS_PER_RUN` or no rows remain. The cost is one extra round-trip per campaign;
+the alternative is silently broken.
 
 **L2 — the state transition is the guard.** `status='open'` is evaluated under the lock, so
 a campaign another worker already closed is simply not in the result set. Idempotency is
