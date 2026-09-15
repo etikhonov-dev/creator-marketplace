@@ -1,9 +1,10 @@
-const EUR = new Intl.NumberFormat('en-IE', { style: 'currency', currency: 'EUR' })
+import { asCents, formatEur } from '@marketplace/domain'
 
 /**
- * Cents in, euros out. The only place the UI divides by 100, so a stray float
- * cannot spread: everything upstream of here is an integer.
+ * Cents in, euros out — using the domain's formatter, not a second Intl
+ * instance. One currency formatter in the codebase means the API, the seed and
+ * the browser cannot disagree about what €12.34 looks like.
  */
 export function Money({ cents }: { cents: number }) {
-  return <span className="tabular-nums">{EUR.format(cents / 100)}</span>
+  return <span className="tabular-nums">{formatEur(asCents(cents))}</span>
 }

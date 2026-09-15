@@ -1,8 +1,16 @@
 import type {
-  BidView, CreatorView, MatchedCampaignsResponse,
+  BidView, CampaignSummary, CreatorView, IneligibleCampaign,
+  MatchedCampaign, MatchedCampaignsResponse,
 } from '../../../api/src/routes/types.js'
 
-export type { BidView, CreatorView, MatchedCampaignsResponse }
+// Re-exported from one place so components import wire types from the client
+// they came from. These are type-only imports across the app boundary: the web
+// bundle contains no API code, but a response-shape change is a compile error
+// here rather than a runtime surprise in the browser.
+export type {
+  BidView, CampaignSummary, CreatorView, IneligibleCampaign,
+  MatchedCampaign, MatchedCampaignsResponse,
+}
 
 /** The stable error codes the API promises. The UI maps codes to copy. */
 export type ApiErrorCode =

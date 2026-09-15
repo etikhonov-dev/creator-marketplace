@@ -30,6 +30,19 @@ export function toCents(euros: number): Cents {
   return Math.round(Number(`${euros}e2`)) as Cents
 }
 
+/**
+ * Reattaches the brand to an integer that already *is* a cent count.
+ *
+ * The database and the wire carry plain integers, so the brand has to come back
+ * at a boundary. Naming that boundary — and validating integrality while we are
+ * here — beats scattering `as Cents` casts through every call site, where a
+ * genuine float would slip past unnoticed.
+ */
+export function asCents(value: number): Cents {
+  if (!Number.isInteger(value)) throw new Error(`not an integer cent amount: ${value}`)
+  return value as Cents
+}
+
 export const centsToEuros = (c: Cents): number => c / 100
 
 const EUR = new Intl.NumberFormat('en-IE', { style: 'currency', currency: 'EUR' })

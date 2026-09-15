@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { toCents, centsToEuros, formatEur, parseEuroInput } from './money.js'
+import { toCents, centsToEuros, formatEur, parseEuroInput, asCents } from './money.js'
 
 describe('money', () => {
   it('converts euros to integer cents', () => {
@@ -49,5 +49,19 @@ describe('money', () => {
     expect(parseEuroInput('')).toBeNull()
     expect(parseEuroInput('abc')).toBeNull()
     expect(parseEuroInput('-5')).toBeNull()
+  })
+})
+
+describe('asCents', () => {
+  it('reattaches the brand to an integer that is already a cent count', () => {
+    expect(asCents(1234)).toBe(1234)
+    expect(formatEur(asCents(1234))).toBe('€12.34')
+  })
+
+  // The point of validating here: the wire is `number`, so without this a float
+  // that never went through toCents would travel as if it had.
+  it('refuses a non-integer, which is how a float would otherwise sneak in', () => {
+    expect(() => asCents(12.5)).toThrow(/not an integer cent amount/)
+    expect(() => asCents(NaN)).toThrow()
   })
 })

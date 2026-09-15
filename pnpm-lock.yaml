@@ -44,6 +44,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@marketplace/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@tanstack/react-query':
         specifier: ^5.62.0
         version: 5.102.8(react@19.3.0)
