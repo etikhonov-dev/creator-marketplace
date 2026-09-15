@@ -97,18 +97,49 @@ export function selectWinners(
   const winningBidIds: string[] = []
   let remaining = budgetCents
 
-  // TODO(you): 1. partition out bids below MIN_FIT_TO_WIN, pushing a
-  //               { won: false, reason: 'below_quality_bar' } outcome for each
+  // 1. The quality floor, applied before price is even considered. A bid below
+  //    the bar cannot win at any price, so it never enters the ranking — which
+  //    is what stops value-density from selecting whatever is cheapest.
+  const contenders: BidCandidate[] = []
+  for (const bid of bids) {
+    if (bid.fitScore < MIN_FIT_TO_WIN) {
+      outcomes.push({ bidId: bid.id, won: false, reason: 'below_quality_bar' })
+    } else {
+      contenders.push(bid)
+    }
+  }
 
-  // TODO(you): 2. sort the survivors with compareBidsByValue
-  //               (remember: do not mutate `bids`)
+  // 2. Rank by value per euro, through the total order above. Sorting a copy:
+  //    `bids` is `readonly` to the type system, but `.sort()` mutates in place
+  //    and the caller's array is live data the closer still needs.
+  const ranked = [...contenders].sort(compareBidsByValue)
 
-  // TODO(you): 3. walk the sorted list. For each bid:
-  //               - fits in `remaining`  -> win, decrement remaining
-  //               - remaining === 0      -> lose, 'outranked'
-  //               - otherwise            -> lose, 'did_not_fit_remaining_budget'
-  //                                         and CONTINUE to the next bid
+  // 3. Fill the budget, CONTINUING past anything that does not fit. Stopping at
+  //    the first unaffordable bid would leave budget unspent while a cheaper,
+  //    still-eligible bid sat further down the list — the brand pays for
+  //    nothing and the creator loses for no reason.
+  for (const bid of ranked) {
+    if (bid.amountCents <= remaining) {
+      remaining -= bid.amountCents
+      winningBidIds.push(bid.id)
+      outcomes.push({ bidId: bid.id, won: true })
+      continue
+    }
 
+    // Two distinct losses, because they tell the creator different things.
+    // Nothing left at all: they were beaten on value. Something left but not
+    // enough: their ask was too large, and a lower one might have fitted.
+    outcomes.push({
+      bidId: bid.id,
+      won: false,
+      reason: remaining === 0 ? 'outranked' : 'did_not_fit_remaining_budget',
+    })
+  }
+
+  // Derived from `remaining` rather than accumulated in a second counter.
+  // Two counters that can disagree is exactly how a budget invariant breaks
+  // silently, and this one is asserted against the campaign budget before the
+  // closer commits.
   return {
     outcomes,
     winningBidIds,

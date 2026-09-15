@@ -1,4 +1,4 @@
-import { genreAffinity, type Genre } from './genre.js'
+import { GENRE_AFFINITY, genreAffinity, type Genre } from './genre.js'
 
 export type CreatorProfile = {
   genre: Genre
@@ -97,25 +97,60 @@ export function scoreFit(
   creator: CreatorProfile,
   requirements: CampaignRequirements,
 ): FitScore {
-  // TODO(you): genre component — a straight lookup, weight 0.5
-  const genreScore = 0
+  const genreScore = genreAffinity(creator.genre, requirements.targetGenre)
 
-  // TODO(you): engagement component — saturate at ENGAGEMENT_CEILING, weight 0.3
-  const engagementScore = 0
+  // Saturating at the ceiling. Above ~8% you are in outlier territory, where
+  // further increases are noise rather than signal — and an unbounded term
+  // would let one freakish week of engagement dominate the whole score.
+  //
+  // A creator at zero engagement scores zero here and forfeits all 30 points.
+  // That is deliberate: engagement is the single most predictive signal of
+  // whether a campaign actually performs, so 2M followers with dead comments
+  // *should* rank below a smaller creator with a live audience.
+  const engagementScore = clamp01(creator.engagementRate / ENGAGEMENT_CEILING)
 
-  // TODO(you): audience component — log-scaled, saturating at
-  // AUDIENCE_SATURATION_MULTIPLE × reference, where reference is
-  // requirements.minFollowers or AUDIENCE_BASELINE when that is 0.
-  // Watch: followerCount can be 0, and log10(0) is -Infinity.
-  const audienceScore = 0
+  // A campaign that states no follower minimum has no natural reference point,
+  // and `followers / 0` is both a division by zero and — worse — a component
+  // that stops discriminating precisely where nothing else constrains who can
+  // bid. AUDIENCE_BASELINE supplies the missing scale.
+  const reference = requirements.minFollowers > 0 ? requirements.minFollowers : AUDIENCE_BASELINE
+  const audienceRatio = creator.followerCount / reference
+
+  // Log-scaled, so the first doubling above the requirement earns far more than
+  // the ninth: 2x the minimum scores 0.30 where a linear ramp would give 0.11.
+  // That is the shape consistent with saturating at all — if extra reach stops
+  // adding value, the curve should pay out early and flatten, not track scale.
+  //
+  // Meeting the minimum exactly scores 0, not a floor. The hard gate already
+  // answered "does this creator have enough reach"; this component exists to
+  // differentiate *among* eligible creators, and a floor would compress that
+  // range for no information gain.
+  //
+  // The `<= 0` guard is for readability rather than safety: log10(0) is
+  // -Infinity, which clamp01 would already flatten to 0.
+  const audienceScore = creator.followerCount <= 0
+    ? 0
+    : clamp01(Math.log10(audienceRatio) / Math.log10(AUDIENCE_SATURATION_MULTIPLE))
 
   const components: ScoreComponent[] = [
-    { key: 'genre', label: 'Genre match', score: genreScore, weight: FIT_WEIGHTS.genre,
-      detail: '' }, // TODO(you): e.g. `Exact: fitness` / `Adjacent to food`
-    { key: 'engagement', label: 'Engagement', score: engagementScore, weight: FIT_WEIGHTS.engagement,
-      detail: '' }, // TODO(you): e.g. `4.0% vs 8% target`
-    { key: 'audience', label: 'Audience size', score: audienceScore, weight: FIT_WEIGHTS.audience,
-      detail: '' }, // TODO(you): e.g. `100k · 10× the 10k minimum`
+    {
+      key: 'genre', label: 'Genre match', score: genreScore, weight: FIT_WEIGHTS.genre,
+      detail: creator.genre === requirements.targetGenre
+        ? `Exact match on ${creator.genre}`
+        : genreScore > GENRE_AFFINITY.unrelated
+          ? `${creator.genre} is adjacent to ${requirements.targetGenre}`
+          : `${creator.genre} is unrelated to ${requirements.targetGenre}`,
+    },
+    {
+      key: 'engagement', label: 'Engagement', score: engagementScore, weight: FIT_WEIGHTS.engagement,
+      detail: engagementScore >= 1
+        ? `${pct(creator.engagementRate)} — at or above the ${pct(ENGAGEMENT_CEILING)} ceiling`
+        : `${pct(creator.engagementRate)} of a ${pct(ENGAGEMENT_CEILING)} ceiling`,
+    },
+    {
+      key: 'audience', label: 'Audience size', score: audienceScore, weight: FIT_WEIGHTS.audience,
+      detail: audienceDetail(creator.followerCount, reference, requirements.minFollowers, audienceScore),
+    },
   ]
 
   const weighted = components.reduce((acc, c) => acc + c.score * c.weight, 0)
@@ -125,6 +160,31 @@ export function scoreFit(
 /** Two decimals, matching the NUMERIC(5,2) column the snapshot is stored in. */
 const round2 = (n: number): number => Math.round(n * 100) / 100
 
-// `genreAffinity` is imported for the genre component above; referenced here so
-// the scaffold typechecks before that component is written.
-void genreAffinity
+const clamp01 = (n: number): number => Math.min(1, Math.max(0, n))
+
+const pct = (rate: number): string => `${(rate * 100).toFixed(1)}%`
+
+const count = (n: number): string => n.toLocaleString('en')
+
+/**
+ * The copy a creator reads to decide whether this campaign is worth an hour of
+ * pitching, so it states the comparison rather than the score: how many
+ * followers they have, against what, and whether more would help.
+ */
+function audienceDetail(
+  followerCount: number, reference: number, statedMinimum: number, score: number,
+): string {
+  const basis = statedMinimum > 0
+    ? `the ${count(statedMinimum)} minimum`
+    : `a ${count(reference)} baseline (no minimum set)`
+
+  if (followerCount <= 0) return `No audience data — measured against ${basis}`
+  if (score >= 1) {
+    return `${count(followerCount)} followers — at least ` +
+      `${AUDIENCE_SATURATION_MULTIPLE}x ${basis}, where this stops adding score`
+  }
+
+  const multiple = followerCount / reference
+  return `${count(followerCount)} followers — ` +
+    `${multiple < 1 ? multiple.toFixed(2) : multiple.toFixed(1)}x ${basis}`
+}
