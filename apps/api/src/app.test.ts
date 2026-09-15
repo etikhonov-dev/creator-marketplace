@@ -11,6 +11,8 @@ import type { Database } from '@marketplace/db'
 const stubDb = {
   execute: async () => [],
   select: () => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) }),
+  // The dev route updates a deadline; returning no rows exercises its 404 path.
+  update: () => ({ set: () => ({ where: () => ({ returning: async () => [] }) }) }),
 } as unknown as Database
 
 const config = (o: Partial<ApiConfig> = {}): ApiConfig => ({
@@ -97,6 +99,42 @@ describe('app middleware', () => {
     expect(res.statusCode).toBe(400)
     expect(res.json().error.code).toBe('VALIDATION_FAILED')
     expect(res.json().error.details.fastifyCode).toBe('FST_ERR_CTP_INVALID_JSON_BODY')
+    await app.close()
+  })
+
+  // Found while walking the README demo with a non-curl HTTP client: a bodyless
+  // POST that sets Content-Length: 0 without a Content-Type was answered 415.
+  it('accepts a bodyless POST however the client frames it', async () => {
+    const app = buildApp({ db: stubDb, config: config({ ENABLE_DEV_TOOLS: true }) })
+    const url = '/api/dev/campaigns/00000000-0000-4000-8000-000000000000/expire'
+
+    const identity = { 'x-creator-id': 'c-1' }
+    // No content headers at all — what browser fetch() and `curl -X POST` send.
+    const bare = await app.inject({ method: 'POST', url, headers: identity })
+    // Content-Length: 0 with no Content-Type — what many HTTP clients send.
+    const zeroLength = await app.inject({
+      method: 'POST', url, headers: { ...identity, 'content-length': '0' }, payload: '',
+    })
+
+    // Both must fail for the SAME reason — the stub resolves no creator, so
+    // both stop at the identity hook. What matters is that neither is rejected
+    // at the content-type layer with a 415.
+    expect(bare.statusCode).toBe(404)
+    expect(bare.json().error.code).toBe('CREATOR_NOT_FOUND')
+    expect(zeroLength.statusCode).toBe(404)
+    expect(zeroLength.json().error.code).toBe('CREATOR_NOT_FOUND')
+    await app.close()
+  })
+
+  it('still rejects an unknown content type that carries an actual body', async () => {
+    const app = buildApp({ db: stubDb, config: config({ ENABLE_DEV_TOOLS: true }) })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/dev/campaigns/00000000-0000-4000-8000-000000000000/expire',
+      headers: { 'x-creator-id': 'c-1', 'content-type': 'application/x-www-form-urlencoded' },
+      payload: 'a=1',
+    })
+    expect(res.statusCode).toBe(415)
     await app.close()
   })
 
