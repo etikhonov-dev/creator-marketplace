@@ -1302,6 +1302,10 @@ describe('selectWinners', () => {
     const budget = 500_000
     const r = selectWinners(bids, budget)
     expect(r.totalAwardedCents).toBeLessThanOrEqual(budget)
+    // Five at 90_000 is 450_000; a sixth would be 540_000. Pinning the count
+    // stops this test from passing against an implementation that awards
+    // nothing at all, which is trivially within budget.
+    expect(won(r)).toHaveLength(5)
     expect(r.totalAwardedCents).toBe(
       r.outcomes.filter((o) => o.won)
         .reduce((sum, o) => sum + bids.find((b) => b.id === o.bidId)!.amountCents, 0),
@@ -1312,6 +1316,9 @@ describe('selectWinners', () => {
     const r = selectWinners([bid({ amountCents: 900_000 }), bid({ amountCents: 800_000 })], 100_000)
     expect(won(r)).toEqual([])
     expect(r.totalAwardedCents).toBe(0)
+    // Asserted before the .every() below, which is vacuously true on an empty
+    // array — the assertion that matters is that both bids were *evaluated*.
+    expect(r.outcomes).toHaveLength(2)
     expect(r.outcomes.every((o) => !o.won && o.reason === 'did_not_fit_remaining_budget')).toBe(true)
   })
 
@@ -1428,8 +1435,9 @@ describe('compareBidsByValue', () => {
 - [ ] **Step 3: Run it and confirm it fails**
 
 Run: `pnpm test -- winners`
-Expected: the `compareBidsByValue` tests PASS; every `selectWinners` test FAILS with
-`selectWinners is not a function`.
+Expected: the `compareBidsByValue` tests PASS and nine `selectWinners` tests FAIL.
+
+The stub returns no outcomes at all, which trivially satisfies "never exceeds the budget", "is deterministic", and "does not mutate its input" — and, before the length assertions were added, also satisfied "awards nothing when every bid alone exceeds the budget", because `[].every(...)` is `true`. Vacuous truth through `.every()` on a possibly-empty array is the most common way a green test suite proves nothing; both tests now assert the expected count first.
 
 - [ ] **Step 4: 🧑 YOUR TURN — implement `selectWinners`**
 
