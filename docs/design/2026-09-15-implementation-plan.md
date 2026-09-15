@@ -229,7 +229,7 @@ git commit -m "chore: pnpm workspace scaffold with strict TS and split unit/inte
 - Create: `packages/db/src/schema.integration.test.ts`
 
 **Interfaces:**
-- Consumes: `Genre` and `GENRES` from `@marketplace/domain` (Task 3 defines them — if executing in order, create `packages/domain/src/genre.ts` first or inline the literal list and refactor in Task 3).
+- Consumes: the `Genre` *type* from `@marketplace/domain` (Task 3 defines it; execute Task 3 before Task 2). The value list is restated locally — see the comment in the schema for why, and for the assertion that keeps the two in step.
 - Produces: `createDb(url: string): Database`, and table objects `creators`, `campaigns`, `closingRuns`, `bids`, `campaignClosings`, `bidEvents`. Inferred row types `Creator`, `Campaign`, `Bid`, `NewBid`, etc. Enum objects `genreEnum`, `campaignStatusEnum`, `bidStatusEnum`, `bidEventTypeEnum`.
 
 - [ ] **Step 1: Write the schema**
@@ -240,10 +240,29 @@ import {
   pgTable, pgEnum, uuid, text, varchar, integer, bigint, numeric,
   timestamp, jsonb, bigserial, index, uniqueIndex, check,
 } from 'drizzle-orm/pg-core'
-import { sql, relations } from 'drizzle-orm'
-import { GENRES } from '@marketplace/domain'
+import { sql } from 'drizzle-orm'
+import type { Genre } from '@marketplace/domain'
 
-export const genreEnum         = pgEnum('genre', GENRES)
+/**
+ * The genre list is restated here rather than imported as a value, because
+ * drizzle-kit bundles this file as CJS and cannot resolve the domain package's
+ * ESM `.js` specifiers. A type-only import survives that bundling (it is
+ * erased), a value import does not.
+ *
+ * The duplication cannot drift: GENRE_VALUES must be *exactly* the Genre union,
+ * and the assertion below is a compile error if a genre is added to or removed
+ * from either side. `satisfies` alone would only prove every value is a Genre,
+ * not that every Genre is present — hence the bidirectional check.
+ */
+const GENRE_VALUES = [
+  'beauty', 'fashion', 'fitness', 'gaming', 'music', 'food', 'tech', 'travel',
+] as const satisfies readonly Genre[]
+
+type MutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never
+const _genreListIsExhaustive: MutuallyAssignable<Genre, (typeof GENRE_VALUES)[number]> = true
+void _genreListIsExhaustive
+
+export const genreEnum         = pgEnum('genre', GENRE_VALUES)
 export const campaignStatusEnum = pgEnum('campaign_status', ['open', 'closed'])
 export const bidStatusEnum      = pgEnum('bid_status', ['pending', 'won', 'lost', 'withdrawn'])
 export const bidEventTypeEnum   = pgEnum('bid_event_type',
@@ -427,6 +446,8 @@ pnpm db:generate
 Expected: `packages/db/drizzle/0000_*.sql` created.
 
 Then **read the generated SQL** and confirm it contains the four enum types, the two partial indexes (`WHERE status = 'open'`, `WHERE finished_at IS NULL`), and every `CHECK` constraint. Drizzle's `check()` and partial-index support vary by version; if any are missing, append them by hand to the generated file — the generated migration is a starting point, not gospel, and the SQL in spec §4 is the target state.
+
+*Verified on drizzle-orm 0.38.4 / drizzle-kit 0.30.6: all four enums, all ten `CHECK` constraints and both partial-index predicates are emitted, and Postgres 16 accepts the table-qualified predicate form drizzle generates. Nothing had to be hand-appended.*
 
 - [ ] **Step 4: Write the schema integration test**
 
