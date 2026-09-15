@@ -1,0 +1,28 @@
+# Assignment brief — kept locally, not part of the submitted work
+ASSIGNMENT.md
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Logs / OS / editor
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Test / coverage
+coverage/
