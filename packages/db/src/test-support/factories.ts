@@ -1,4 +1,12 @@
-import { createDb, campaigns, creators, bids, type Database } from '@marketplace/db'
+/**
+ * Test factories for this schema. They live in the db package because the db
+ * package owns the schema: the alternative had apps/api importing apps/worker's
+ * test folder, which couples two independently deployable services through
+ * their tests.
+ */
+import { createDb } from '../client.js'
+import { campaigns, creators, bids } from '../schema.js'
+import type { Database } from '../client.js'
 import { sql } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
 

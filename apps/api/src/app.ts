@@ -6,6 +6,9 @@ import dbPlugin from './plugins/db.js'
 import errorHandler from './plugins/error-handler.js'
 import creatorContext from './plugins/creator-context.js'
 import healthRoutes from './routes/health.js'
+import creatorRoutes from './routes/creators.js'
+import campaignRoutes from './routes/campaigns.js'
+import bidRoutes from './routes/bids.js'
 import devRoutes from './routes/dev.js'
 
 export function buildApp({ db, config }: { db: Database; config: ApiConfig }) {
@@ -24,6 +27,9 @@ export function buildApp({ db, config }: { db: Database; config: ApiConfig }) {
   app.register(errorHandler)
   app.register(creatorContext)
   app.register(healthRoutes)
+  app.register(creatorRoutes)
+  app.register(campaignRoutes)
+  app.register(bidRoutes)
   app.register(devRoutes, { enabled: config.ENABLE_DEV_TOOLS })
 
   return app

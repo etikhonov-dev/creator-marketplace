@@ -4,7 +4,9 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1),
   CLOSE_INTERVAL_MS: z.coerce.number().int().positive().default(15_000),
   MAX_CAMPAIGNS_PER_RUN: z.coerce.number().int().positive().default(50),
-  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  // 'silent' included so the same LOG_LEVEL value is valid for both services;
+  // compose sets one variable, and pino accepts it in either.
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 })
 
 export type WorkerConfig = z.infer<typeof schema>

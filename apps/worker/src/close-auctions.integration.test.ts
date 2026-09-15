@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { eq, sql } from 'drizzle-orm'
 import { bids, campaigns, campaignClosings, closingRuns, bidEvents } from '@marketplace/db'
 import { closeExpiredAuctions } from './close-auctions.js'
-import { connect, truncateAll, makeCreator, makeCampaign, makeBid } from './test-support/factories.js'
+import { connect, truncateAll, makeCreator, makeCampaign, makeBid } from '@marketplace/db/test-support'
 
 let ctx: ReturnType<typeof connect>
 

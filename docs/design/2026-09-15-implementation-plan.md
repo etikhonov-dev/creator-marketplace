@@ -1399,21 +1399,29 @@ describe('the documented worst case (spec §6.4)', () => {
   // Greedy density is not optimal. Pinning the known failure as a test means the
   // README's caveat is verified rather than asserted — and if someone later
   // swaps in a better algorithm, this test tells them the trade-off changed.
-  it('prefers a tiny efficient bid over a budget-filling one', () => {
+  it('takes both when the budget can hold both', () => {
     const tiny = bid({ amountCents: 100, fitScore: 41 })       // density 0.41
     const big  = bid({ amountCents: 100_000, fitScore: 100 })  // density 0.001
-    const r = selectWinners([tiny, big], 100_000)
-    // Both fit here thanks to continuation, so total fit is 141.
+    // 100_100 exactly, not 100_000: the two bids together cost 100_100, so a
+    // 100_000 budget cannot hold both and this would be testing the gap below
+    // rather than continuation.
+    const r = selectWinners([tiny, big], 100_100)
     expect(won(r)).toHaveLength(2)
+    expect(r.totalAwardedCents).toBe(100_100)
+  })
 
-    // But make the big one exactly fill the budget and the gap appears:
-    const r2 = selectWinners(
+  it('leaves the budget almost untouched to buy one cheap bid — the greedy gap', () => {
+    const r = selectWinners(
       [bid({ amountCents: 100, fitScore: 41 }), bid({ amountCents: 100_000, fitScore: 100 })],
-      100_050,
+      100_000,
     )
-    expect(r2.winningBidIds).toHaveLength(1)
-    // Greedy takes the tiny one (fit 41); optimal would take the big one (fit 100).
-    expect(r2.totalAwardedCents).toBe(100)
+    // Greedy buys the €1 bid (fit 41) first on density, and then cannot afford
+    // the €1,000 bid at all. The optimal allocation is the big bid alone:
+    // fit 100 for the whole budget. This is the price of a rule creators can
+    // reason about — see spec §6.2 — and it is pinned so the README's caveat is
+    // verified rather than asserted.
+    expect(r.winningBidIds).toHaveLength(1)
+    expect(r.totalAwardedCents).toBe(100)
   })
 })
 
@@ -1825,7 +1833,9 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1),
   CLOSE_INTERVAL_MS: z.coerce.number().int().positive().default(15_000),
   MAX_CAMPAIGNS_PER_RUN: z.coerce.number().int().positive().default(50),
-  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  // 'silent' included so the same LOG_LEVEL value is valid for both services;
+  // compose sets one variable, and pino accepts it in either.
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 })
 
 export type WorkerConfig = z.infer<typeof schema>
@@ -2639,6 +2649,8 @@ git commit -m "feat(api): app skeleton with single-source identity, stable error
 - Create: `apps/api/src/routes/{creators,campaigns,bids,dev}.ts`
 - Test: `apps/api/src/services/bidding.integration.test.ts`
 
+Test factories live in `packages/db/src/test-support/factories.ts`, exported as `@marketplace/db/test-support`. The db package owns the schema, so factories for that schema belong there; the alternative had `apps/api` importing `apps/worker`'s test folder, coupling two independently deployable services through their tests.
+
 **Interfaces:**
 - Consumes: `checkEligibility`, `scoreFit`, `isEligible` from `@marketplace/domain`; `AppError` helpers.
 - Produces:
@@ -2821,7 +2833,7 @@ export const toBidView = (
 import { and, eq } from 'drizzle-orm'
 import { bids, bidEvents, campaigns, type Creator, type Database } from '@marketplace/db'
 import { checkEligibility, scoreFit } from '@marketplace/domain'
-import { conflict, notFound, unprocessable } from '../errors.js'
+import { conflict, forbidden, notFound, unprocessable } from '../errors.js'
 import { toBidView, toCampaignSummary } from '../repositories/campaigns.js'
 import type { BidView } from '../routes/types.js'
 
@@ -2913,7 +2925,7 @@ export async function withdrawBid(
     if (bid.creatorId !== creator.id) {
       // Not security (there is no auth), but the ownership check belongs here
       // so that adding auth later does not require finding every mutation.
-      throw new (await import('../errors.js')).AppError('NOT_BID_OWNER', 403, 'Not your bid')
+      throw forbidden('NOT_BID_OWNER', 'Not your bid')
     }
     if (bid.status !== 'pending') throw conflict('BID_NOT_EDITABLE', 'This bid can no longer be changed')
 
@@ -3077,7 +3089,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { bidEvents, bids } from '@marketplace/db'
 import { placeBid, withdrawBid } from './bidding.js'
-import { connect, truncateAll, makeCreator, makeCampaign } from '../../../worker/test/factories.js'
+import { connect, truncateAll, makeCreator, makeCampaign } from '@marketplace/db/test-support'
 
 let ctx: ReturnType<typeof connect>
 beforeAll(() => { ctx = connect() })

@@ -142,21 +142,29 @@ describe('the documented worst case (spec §6.4)', () => {
   // Greedy density is not optimal. Pinning the known failure as a test means the
   // README's caveat is verified rather than asserted — and if someone later
   // swaps in a better algorithm, this test tells them the trade-off changed.
-  it('prefers a tiny efficient bid over a budget-filling one', () => {
+  it('takes both when the budget can hold both', () => {
     const tiny = bid({ amountCents: 100, fitScore: 41 })       // density 0.41
     const big  = bid({ amountCents: 100_000, fitScore: 100 })  // density 0.001
-    const r = selectWinners([tiny, big], 100_000)
-    // Both fit here thanks to continuation, so total fit is 141.
+    // 100_100 exactly, not 100_000: the two bids together cost 100_100, so a
+    // 100_000 budget cannot hold both and this would be testing the gap below
+    // rather than continuation.
+    const r = selectWinners([tiny, big], 100_100)
     expect(won(r)).toHaveLength(2)
+    expect(r.totalAwardedCents).toBe(100_100)
+  })
 
-    // But make the big one exactly fill the budget and the gap appears:
-    const r2 = selectWinners(
+  it('leaves the budget almost untouched to buy one cheap bid — the greedy gap', () => {
+    const r = selectWinners(
       [bid({ amountCents: 100, fitScore: 41 }), bid({ amountCents: 100_000, fitScore: 100 })],
-      100_050,
+      100_000,
     )
-    expect(r2.winningBidIds).toHaveLength(1)
-    // Greedy takes the tiny one (fit 41); optimal would take the big one (fit 100).
-    expect(r2.totalAwardedCents).toBe(100)
+    // Greedy buys the €1 bid (fit 41) first on density, and then cannot afford
+    // the €1,000 bid at all. The optimal allocation is the big bid alone:
+    // fit 100 for the whole budget. This is the price of a rule creators can
+    // reason about — see spec §6.2 — and it is pinned so the README's caveat is
+    // verified rather than asserted.
+    expect(r.winningBidIds).toHaveLength(1)
+    expect(r.totalAwardedCents).toBe(100)
   })
 })
 
