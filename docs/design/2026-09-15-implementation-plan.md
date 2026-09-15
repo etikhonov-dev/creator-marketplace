@@ -1834,7 +1834,7 @@ export type WorkerConfig = z.infer<typeof schema>
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const parsed = schema.safeParse(env)
   if (!parsed.success) {
-    throw new Error(`invalid worker configuration:\n${z.prettifyError(parsed.error)}`)
+    throw new Error(`invalid worker configuration:\n${formatIssues(parsed.error)}`)
   }
   return parsed.data
 }
@@ -2366,7 +2366,7 @@ export type ApiConfig = z.infer<typeof schema>
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const parsed = schema.safeParse(env)
-  if (!parsed.success) throw new Error(`invalid API configuration:\n${z.prettifyError(parsed.error)}`)
+  if (!parsed.success) throw new Error(`invalid API configuration:\n${formatIssues(parsed.error)}`)
   return parsed.data
 }
 ```
@@ -2399,10 +2399,19 @@ const ANONYMOUS = new Set(['/api/health', '/api/creators'])
  * swap this for a plugin that reads a verified JWT and no route changes.
  */
 export default fp(async (app) => {
-  app.decorateRequest('creator', null)
+  // Single-argument form: declares the property so every request object has the
+  // same V8 shape, without seeding a value. Passing `null` here would be the
+  // Fastify 4 idiom and does not typecheck against the declared `Creator`.
+  app.decorateRequest('creator')
 
   app.addHook('preHandler', async (request) => {
-    if (ANONYMOUS.has(request.routeOptions.url ?? '')) return
+    // Fastify runs root-level preHandler hooks for the not-found handler as
+    // well, where routeOptions.url is undefined. Without this check every
+    // unknown path answers 400 CREATOR_REQUIRED instead of 404 — hiding the
+    // real problem (wrong URL) behind a misleading one (missing header), and
+    // making a disabled dev route indistinguishable from an unauthenticated one.
+    const url = request.routeOptions.url
+    if (url === undefined || ANONYMOUS.has(url)) return
 
     const id = request.headers['x-creator-id']
     if (typeof id !== 'string' || id.length === 0) {
@@ -2436,11 +2445,15 @@ export default fp<{ db: Database }>(async (app, opts) => {
 `apps/api/src/plugins/error-handler.ts`:
 ```ts
 import fp from 'fastify-plugin'
+import type { FastifyError } from 'fastify'
 import { ZodError } from 'zod'
 import { AppError } from '../errors.js'
 
 export default fp(async (app) => {
-  app.setErrorHandler((error, request, reply) => {
+  // Explicit generic: Fastify 5 types the handler's error as `unknown` by
+  // default, so narrowing to FastifyError is what makes `error.validation`
+  // readable below.
+  app.setErrorHandler<FastifyError>((error, request, reply) => {
     if (error instanceof AppError) {
       // Expected failures are logged at warn: they are user-facing outcomes,
       // not incidents, and shouldn't pollute error alerting.
@@ -2450,10 +2463,17 @@ export default fp(async (app) => {
       })
     }
 
-    if (error instanceof ZodError || error.validation) {
+    // Two distinct shapes, so two branches rather than one cast: a ZodError
+    // carries `issues`, a Fastify schema failure carries `validation`.
+    if (error instanceof ZodError) {
       return reply.status(400).send({
-        error: { code: 'VALIDATION_FAILED', message: 'Request body is invalid',
-                 details: error.validation ?? (error as ZodError).issues },
+        error: { code: 'VALIDATION_FAILED', message: 'Request body is invalid', details: error.issues },
+      })
+    }
+
+    if (error.validation) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_FAILED', message: 'Request body is invalid', details: error.validation },
       })
     }
 
@@ -2495,9 +2515,10 @@ import dbPlugin from './plugins/db.js'
 import errorHandler from './plugins/error-handler.js'
 import creatorContext from './plugins/creator-context.js'
 import healthRoutes from './routes/health.js'
-import campaignRoutes from './routes/campaigns.js'
-import bidRoutes from './routes/bids.js'
 import devRoutes from './routes/dev.js'
+// NOTE: campaignRoutes / bidRoutes / creatorRoutes are added in Task 9. Task 8
+// deliberately does not import them, so its own suite is green on its own —
+// a task that cannot be tested until a later task lands is not a task boundary.
 
 export function buildApp({ db, config }: { db: Database; config: ApiConfig }) {
   const app = Fastify({
@@ -2515,8 +2536,6 @@ export function buildApp({ db, config }: { db: Database; config: ApiConfig }) {
   app.register(errorHandler)
   app.register(creatorContext)
   app.register(healthRoutes)
-  app.register(campaignRoutes)
-  app.register(bidRoutes)
   app.register(devRoutes, { enabled: config.ENABLE_DEV_TOOLS })
 
   return app
@@ -2597,7 +2616,13 @@ describe('app middleware', () => {
 - [ ] **Step 6: Run, then commit**
 
 Run: `pnpm test -- app`
-Expected: 4 PASS (after Task 9 creates the route modules the app imports).
+Expected: 7 PASS, with no dependency on Task 9.
+
+The identity tests register their own `/probe` route inside the test rather than borrowing `/api/campaigns`: the contract under test belongs to the plugin, not to whichever product route happens to exist yet.
+
+Two defects this suite caught:
+- Fastify runs root-level `preHandler` hooks for the **not-found** handler, where `request.routeOptions.url` is `undefined`. The original guard (`ANONYMOUS.has(url ?? '')`) therefore demanded a creator header on every unknown path, so a typo'd URL answered `400 CREATOR_REQUIRED` instead of `404`, and a disabled dev route was indistinguishable from an unauthenticated one. Fixed by returning early when no route matched.
+- `routes/dev.ts` moved into this task. It is the flag whose default must fail safe, so it gets its test here rather than two tasks later — and both directions are asserted: disabled ⇒ the route is absent from the router (404), enabled ⇒ it exists and goes through the same identity pipeline (400 without a header).
 
 ```bash
 git add -A
