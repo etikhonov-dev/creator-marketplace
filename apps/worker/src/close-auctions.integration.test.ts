@@ -204,3 +204,27 @@ describe('closeExpiredAuctions', () => {
     expect(n!.status).toBe('open')
   })
 })
+
+describe('the completeness assertion (L6)', () => {
+  it('refuses to close a campaign while any pending bid is left undecided', async () => {
+    const campaign = await makeCampaign(ctx.db, { budgetCents: 500_000 })
+    const c1 = await makeCreator(ctx.db)
+    await makeBid(ctx.db, campaign.id, c1.id, { amountCents: 100_000, fitScore: '90.00' })
+
+    // A selection that silently drops a bid. Without L6 this closes the
+    // campaign and strands the bid as `pending` forever: the campaign is no
+    // longer claimable, so nothing will ever decide it.
+    const dropsEverything = () => ({ outcomes: [], winningBidIds: [], totalAwardedCents: 0 })
+
+    await expect(
+      closeExpiredAuctions(ctx.db, { selectWinners: dropsEverything }),
+    ).rejects.toThrow(/did not decide every bid/)
+
+    // Rolled back: still open, still pending, no closing row.
+    const [row] = await ctx.db.select().from(campaigns).where(eq(campaigns.id, campaign.id))
+    expect(row!.status).toBe('open')
+    const [bid] = await ctx.db.select().from(bids)
+    expect(bid!.status).toBe('pending')
+    expect(await ctx.db.select().from(campaignClosings)).toHaveLength(0)
+  })
+})

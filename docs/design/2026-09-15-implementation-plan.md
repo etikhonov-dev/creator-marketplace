@@ -1868,15 +1868,30 @@ import { and, asc, eq, isNull, lte, sql } from 'drizzle-orm'
 import {
   bids, bidEvents, campaigns, campaignClosings, closingRuns, type Database,
 } from '@marketplace/db'
-import { selectWinners, type BidCandidate } from '@marketplace/domain'
+import {
+  selectWinners as defaultSelectWinners,
+  type BidCandidate, type SelectionResult,
+} from '@marketplace/domain'
 import pino from 'pino'
 import type { Logger } from './logger.js'
+
+/** The selection rule the closer applies. Exactly `selectWinners`' signature. */
+export type SelectWinnersFn = (
+  bids: readonly BidCandidate[],
+  budgetCents: number,
+) => SelectionResult
 
 export type CloseOptions = {
   /** Injected so tests can control the cutoff. Defaults to wall clock. */
   now?: Date
   maxCampaigns?: number
   logger?: Logger
+  /**
+   * Injected only by tests, to drive the assertions below with a deliberately
+   * broken rule. Production never passes this: the default is the domain
+   * function, so there is one selection implementation, not two.
+   */
+  selectWinners?: SelectWinnersFn
 }
 
 export type RunSummary = {
@@ -1897,10 +1912,14 @@ export type RunSummary = {
  *   L3  one transaction per campaign, so a crash rolls back cleanly
  *   L4  campaign_closings.campaign_id is a PK, so a double close cannot commit
  *   L5  the budget assertion before commit
+ *   L6  the completeness assertion: every pending bid leaves with a decision
  */
 export async function closeExpiredAuctions(
   db: Database,
-  { now, maxCampaigns = 50, logger = pino({ enabled: false }) }: CloseOptions,
+  {
+    now, maxCampaigns = 50, logger = pino({ enabled: false }),
+    selectWinners = defaultSelectWinners,
+  }: CloseOptions,
 ): Promise<RunSummary> {
   // Committed in its own transaction, before any campaign work, so the
   // per-campaign rows can reference it. A crash therefore leaves
@@ -1915,7 +1934,7 @@ export async function closeExpiredAuctions(
 
   try {
     for (let i = 0; i < maxCampaigns; i++) {
-      const result = await closeOneCampaign(db, { runId, now, log })
+      const result = await closeOneCampaign(db, { runId, now, log, selectWinners })
       if (!result) break
       campaignsClosed += 1
       bidsDecided += result.bidsDecided
@@ -1958,7 +1977,9 @@ async function closeOneCampaign(
   // those differ: the public CloseOptions may omit the key, but this internal
   // call always passes it, possibly holding undefined. Saying so is the honest
   // signature rather than widening the caller.
-  { runId, now, log }: { runId: string; now: Date | undefined; log: Logger },
+  { runId, now, log, selectWinners }: {
+    runId: string; now: Date | undefined; log: Logger; selectWinners: SelectWinnersFn
+  },
 ): Promise<OneResult | null> {
   return db.transaction(async (tx) => {
     const cutoff = now ?? new Date()
@@ -1988,6 +2009,19 @@ async function closeOneCampaign(
     const selection = candidates.length > 0
       ? selectWinners(candidates, campaign.budgetCents)
       : { outcomes: [], winningBidIds: [], totalAwardedCents: 0 }
+
+    // L6: every pending bid must receive a decision. Without this a buggy
+    // selectWinners that drops bids would close the campaign and leave those
+    // bids `pending` forever — invisible, un-actionable, and unrecoverable
+    // because the campaign is no longer claimable. Found by running the closer
+    // against a stub selection that returned no outcomes: the campaign closed
+    // with bid_count 4 and four bids still pending.
+    if (selection.outcomes.length !== candidates.length) {
+      throw new Error(
+        `selection did not decide every bid for campaign ${campaign.id}: ` +
+        `${selection.outcomes.length} outcomes for ${candidates.length} pending bids`,
+      )
+    }
 
     // L5: refuse to commit rather than overspend. A throw here rolls the whole
     // transaction back and leaves the campaign open for the next run.
