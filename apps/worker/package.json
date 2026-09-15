@@ -1,0 +1,17 @@
+{
+  "name": "@marketplace/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start:once": "tsx src/main.ts --once",
+    "start:loop": "tsx src/main.ts --loop"
+  },
+  "dependencies": {
+    "@marketplace/db": "workspace:*",
+    "@marketplace/domain": "workspace:*",
+    "drizzle-orm": "^0.38.0",
+    "pino": "^9.5.0",
+    "zod": "^3.24.0"
+  }
+}

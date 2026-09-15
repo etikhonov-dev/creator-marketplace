@@ -663,8 +663,6 @@ now      per-campaign greedy in application code                        N ≈ 10
   ↓      semantic features (brief text × content embeddings, audience
          overlap, brand safety) → pgvector/HNSW for candidate generation,
          the same explainable rule ranks the shortlist                   two-stage retrieval
-  ↓      MIP — only if the product moves to batched allocation rounds,
-         or creator capacity becomes a hard cross-campaign constraint
 ```
 
 ### 15.1 Vector search belongs in retrieval, not ranking
@@ -684,43 +682,6 @@ right shape is **ANN for recall, deterministic rule for ranking** — the standa
 retrieval-and-ranking architecture. Explainability is preserved exactly where creators see
 it.
 
-### 15.2 Why not a global MIP solver
-
-Granting the technical claim first: min-cost max-flow cannot express a per-campaign budget
-natively, because flow constraints are edge capacities while `Σ rate_k · x_k ≤ budget_c` is
-a knapsack constraint on a weighted sum. Discretising budget into flow units is a hack. For
-*global assignment* with heterogeneous rates and multiple objectives, MIP over MCMF is the
-right call. The objection is not the math — it is that MIP solves a different problem.
-
-1. **Different market design.** The brief specifies a bidding market: creators self-select
-   and name their own price — decentralised price discovery. A MIP over
-   `X[campaign, creator]` is centralised allocation. Note this also dissolves MIP's
-   strongest advantage: in a bidding market rates are not variable-and-unknown, each bid
-   *fixes* the price for that pair.
-2. **Independent deadlines make it ill-posed.** Campaign A closes at 10:00, B at 14:00. By
-   14:00 A's awards are committed contracts; re-optimising means revoking an award a
-   creator was already told they won. So a global MIP degenerates into a sequence of
-   per-campaign problems — unless the product becomes batched allocation rounds, which is a
-   different promise to creators.
-3. **Whose budget is being optimised?** `maximise total platform match quality` subject to
-   per-campaign budgets means brand X's money can be spent worse so brand Y's outcome
-   improves. Per-campaign optimisation has a property the global version structurally
-   cannot: every euro of a brand's budget is spent to maximise that brand's outcome.
-4. **Non-explainability across campaigns.** §6.2 rejected exact DP because an outcome
-   depends combinatorially on other bids within a campaign. Global MIP is worse: a creator
-   loses campaign 1 because the solver preferred to spend her capacity on campaign 2. There
-   is no threshold price and no advice you can give her.
-5. **Unbounded solve time.** MIP is NP-hard; a pathological instance blows past any
-   estimate. For a job on a deadline SLA you set a time limit and accept the incumbent —
-   i.e. back to an approximate answer, with less explainability than greedy and more
-   infrastructure. And with per-campaign budgets and no cross-campaign constraint the
-   problem *decomposes* per campaign, which is why a solver would be fast on it — and why
-   it was not needed.
-
-> Greedy versus MIP is not an optimisation question, it is a market-design question. An
-> auction is decentralised price discovery; MIP assignment is central planning. The choice
-> determines what can be explained to a creator, and whether one brand's budget can be
-> spent to improve another brand's outcome.
 
 ## 16. Known limits and deliberate omissions
 

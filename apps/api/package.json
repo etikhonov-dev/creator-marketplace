@@ -1,0 +1,18 @@
+{
+  "name": "@marketplace/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@marketplace/db": "workspace:*",
+    "@marketplace/domain": "workspace:*",
+    "drizzle-orm": "^0.38.0",
+    "fastify": "^5.2.0",
+    "fastify-plugin": "^5.0.1",
+    "zod": "^3.24.0"
+  }
+}
