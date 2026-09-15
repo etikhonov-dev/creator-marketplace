@@ -10,6 +10,11 @@ it runs concurrently with itself, when it runs twice, and when a bid lands in th
 millisecond before the deadline** — and that the correctness lives in Postgres
 transactions and constraints rather than in application discipline.
 
+**▶ [Watch the 1-minute demo](https://drive.google.com/file/d/15XGKWjHSU8qNiuATc78MTNV7s6JWN9Yd/view?usp=sharing)** — the whole loop: a ranked
+feed with the match score explained, a bid placed, the deadline expiring, and the
+scheduled worker settling the auction. If you would rather run it than watch it,
+`docker compose up --build` is the next section.
+
 ---
 
 ## Run it
